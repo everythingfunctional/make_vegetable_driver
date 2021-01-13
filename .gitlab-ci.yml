@@ -1,0 +1,4 @@
+test:
+  image: registry.gitlab.com/everythingfunctional/dockerfpm
+  script:
+    - fpm build
