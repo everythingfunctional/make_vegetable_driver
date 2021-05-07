@@ -139,7 +139,7 @@ contains
         the_result = then_drop( &
                 drop_then( &
                         drop_then( &
-                                drop_then(parse_one_or_more_white_spaces, parse_function, the_state), &
+                                drop_then(parse_any_white_spaces, parse_function, the_state), &
                                 parse_at_least_one_white_space), &
                         parse_valid_identifier), &
                 parse_space_or_open_paren)
@@ -181,7 +181,7 @@ contains
         the_result = parse_char("(", the_state)
     end function
 
-    pure function parse_one_or_more_white_spaces(the_state) result(the_result)
+    pure function parse_any_white_spaces(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, many
 
         type(state_t), intent(in) :: the_state
