@@ -423,7 +423,8 @@ contains
                 renamed_functions(i) = &
                         "                " &
                         // rename_(test_info%module_name, test_info%function_names(i)) &
-                        // " => " // test_info%function_names(i)
+                        // " => &" // NEWLINE &
+                        // "                    " // test_info%function_names(i)
             end do
             functions_part = join(renamed_functions, ", &" // NEWLINE)
             use_statement = &
