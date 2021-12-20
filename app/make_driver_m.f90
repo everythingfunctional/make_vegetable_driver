@@ -1,28 +1,123 @@
 module make_driver_m
-    use iso_varying_string, only: varying_string
+    use iso_varying_string, only: varying_string, assignment(=)
+    use m_cli, only: commandline, check_commandline, files=>unnamed
 
     implicit none
     private
-    public :: make_driver
+    public :: get_command_line, make_driver
+
+    type :: command_line_t
+        type(varying_string) :: driver_file
+        type(varying_string), allocatable :: test_files(:)
+        logical :: has_setup_and_teardown
+        type(varying_string) :: setup_module
+        type(varying_string) :: setup_procedure
+        type(varying_string) :: teardown_module
+        type(varying_string) :: teardown_procedure
+    end type
 
     type :: test_info_t
         type(varying_string) :: module_name
         type(varying_string), allocatable :: function_names(:)
     end type
 contains
-    subroutine make_driver(driver_file, test_files)
+    function get_command_line() result(command_line)
+        type(command_line_t) :: command_line
+
+        character(len=*), parameter :: EXAMPLE_COMMAND_LINE =  &
+                '--setup_module " " --setup_procedure " " --teardown_module " " --teardown_procedure " "'
+        character(len=:), allocatable :: help_text(:)
+        character(len=:), allocatable :: version_text(:)
+        integer :: i, ios
+        integer :: maxlen, leni
+        character(len=256) :: message
+        character(len=:), allocatable :: parsed_command_line
+        character(len=:), allocatable :: setup_module, setup_procedure, teardown_module, teardown_procedure
+        namelist /args/ setup_module, setup_procedure, teardown_module, teardown_procedure
+
+        help_text = [character(len=80) :: &
+                'NAME                                                    ', &
+                '   make_vegetable_driver                                ', &
+                'DESCRIPTION                                             ', &
+                '   Create the driver program for a vegetables test suite', &
+                'USAGE                                                   ', &
+                '   make_vegetable_driver \                              ', &
+                '       [--setup_module "" --setup_procedure "" \        ', &
+                '        --teardown_module "" --teardown_procedure ""] \ ', &
+                '       driver_name test_file [more [test [files [...]]]]', &
+                '' ]
+        version_text = [character(len=80) :: &
+                'PROGRAM:     make_vegetable_driver                                 >', &
+                'DESCRIPTION: Create the driver program for a vegetables test suite >', &
+                'VERSION:     1.1.0                                                 >', &
+                'AUTHOR:      Brad Richardson                                       >', &
+                'LICENSE:     MIT                                                   >', &
+                '' ]
+
+        ! find length of longest argument and allocate variables
+        ! to be big enough to hold that so it will not be truncated
+        maxlen=0
+        do i = 1, command_argument_count()
+            call get_command_argument(i,length=leni)
+            maxlen=max(maxlen,leni)
+        end do
+        allocate(character(len=maxlen) :: setup_module, setup_procedure, teardown_module, teardown_procedure)
+        parsed_command_line = commandline(EXAMPLE_COMMAND_LINE)
+        read(parsed_command_line, nml=args, iostat=ios, iomsg=message)
+        call check_commandline(ios, message, HELP_TEXT, VERSION_TEXT)
+        if (size(files) < 2) then
+            print *, "Not enough file names provided"
+            print *, ""
+            do i = 1, size(HELP_TEXT)
+                print *, HELP_TEXT(i)
+            end do
+            error stop
+        else
+            allocate(command_line%test_files(size(files) - 1))
+            command_line%driver_file = trim(files(1))
+            do i = 1, size(files) - 1
+                command_line%test_files(i) = trim(files(i+1))
+            end do
+        end if
+        if (any([setup_module, setup_procedure, teardown_module, teardown_procedure] /= "")) then
+            if (any([setup_module, setup_procedure, teardown_module, teardown_procedure] == "")) then
+                print *, "Must provide all of setup/teardown arguments or none"
+                print *, ""
+                do i = 1, size(HELP_TEXT)
+                    print *, HELP_TEXT(i)
+                end do
+                error stop
+            else
+                command_line%has_setup_and_teardown = .true.
+                command_line%setup_module = trim(setup_module)
+                command_line%setup_procedure = trim(setup_procedure)
+                command_line%teardown_module = trim(teardown_module)
+                command_line%teardown_procedure = trim(teardown_procedure)
+            end if
+        else
+            command_line%has_setup_and_teardown = .false.
+            command_line%setup_module = ""
+            command_line%setup_procedure = ""
+            command_line%teardown_module = ""
+            command_line%teardown_procedure = ""
+        end if
+    end function
+
+    subroutine make_driver(command_line)
         use iso_varying_string, only: varying_string, char, put
 
-        type(varying_string), intent(in) :: driver_file
-        type(varying_string), intent(in) :: test_files(:)
+        type(command_line_t), intent(in) :: command_line
 
         integer :: file_unit
         type(varying_string) :: program_
-        type(test_info_t) :: test_infos(size(test_files))
+        type(test_info_t) :: test_infos(size(command_line%test_files))
 
-        call get_test_info(test_files, test_infos)
-        program_ = make_program(take_file_name(drop_extension(driver_file)), test_infos)
-        open(newunit = file_unit, file = char(driver_file), action = "WRITE", status = "REPLACE")
+        call get_test_info(command_line%test_files, test_infos)
+        program_ = make_program( &
+                take_file_name(drop_extension(command_line%driver_file)), &
+                test_infos, &
+                command_line)
+        open(newunit = file_unit, file = char(command_line%driver_file), action = "WRITE", status = "REPLACE")
         call put(file_unit, program_)
         close(file_unit)
     end subroutine
@@ -97,21 +192,21 @@ contains
         lines = read_file_lines(filename)
         allocate(maybe_function_names(size(lines)))
         maybe_function_names = parse_line(lines)
-        num_function_names = count(maybe_function_names%ok)
-        allocate(function_name_results(num_function_names))
         allocate(function_mask(size(lines)))
-        function_mask = maybe_function_names%ok
+        function_mask = [(maybe_function_names(i)%ok(), i = 1, size(maybe_function_names))]
+        num_function_names = count(function_mask)
+        allocate(function_name_results(num_function_names))
         function_name_results = pack(maybe_function_names, function_mask)
         allocate(function_names(num_function_names))
         do i = 1, num_function_names
-            select type (name => function_name_results(i)%parsed)
+            select type (name => function_name_results(i)%parsed())
             type is (parsed_string_t)
-                function_names(i) = name%value_
+                function_names(i) = name%value_()
             end select
         end do
     end subroutine
 
-    elemental function parse_line(line) result(maybe_name)
+    impure elemental function parse_line(line) result(maybe_name)
         use iso_varying_string, only: varying_string
         use parff, only: parse_result_t, parse_with
 
@@ -121,15 +216,15 @@ contains
         maybe_name = parse_with(parse_test_function_name, line)
     end function
 
-    pure function parse_test_function_name(the_state) result(the_result)
+    function parse_test_function_name(the_state) result(the_result)
         use iso_varying_string, only: var_str
         use parff, only: &
+                message_t, &
                 parsed_string_t, &
                 parser_output_t, &
                 state_t, &
                 drop_then, &
                 empty_error, &
-                message, &
                 then_drop
         use strff, only: operator(.startswith.)
 
@@ -143,18 +238,18 @@ contains
                                 parse_at_least_one_white_space), &
                         parse_valid_identifier), &
                 parse_space_or_open_paren)
-        if (the_result%ok) then
-            select type (the_name => the_result%parsed)
+        if (the_result%ok()) then
+            select type (the_name => the_result%parsed())
             type is (parsed_string_t)
-                if (.not. (the_name%value_.startswith."test_")) then
-                    the_result = empty_error(message( &
-                            the_state%position, the_name%value_, [var_str("test_*")]))
+                if (.not. (the_name%value_().startswith."test_")) then
+                    the_result = empty_error(message_t( &
+                            the_state%position(), the_name%value_(), [var_str("test_*")]))
                 end if
             end select
         end if
     end function
 
-    pure function parse_function(the_state) result(the_result)
+    function parse_function(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, parse_string
 
         type(state_t), intent(in) :: the_state
@@ -163,7 +258,7 @@ contains
         the_result = parse_string("function", the_state)
     end function
 
-    pure function parse_space_or_open_paren(the_state) result(the_result)
+    function parse_space_or_open_paren(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, either
 
         type(state_t), intent(in) :: the_state
@@ -172,7 +267,7 @@ contains
         the_result = either(parse_at_least_one_white_space, parse_open_paren, the_state)
     end function
 
-    pure function parse_open_paren(the_state) result(the_result)
+    function parse_open_paren(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, parse_char
 
         type(state_t), intent(in) :: the_state
@@ -181,7 +276,7 @@ contains
         the_result = parse_char("(", the_state)
     end function
 
-    pure function parse_any_white_spaces(the_state) result(the_result)
+    function parse_any_white_spaces(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, many
 
         type(state_t), intent(in) :: the_state
@@ -190,7 +285,7 @@ contains
         the_result = many(parse_white_space, the_state)
     end function
 
-    pure function parse_at_least_one_white_space(the_state) result(the_result)
+    function parse_at_least_one_white_space(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, many1
 
         type(state_t), intent(in) :: the_state
@@ -199,7 +294,7 @@ contains
         the_result = many1(parse_white_space, the_state)
     end function
 
-    pure function parse_valid_identifier(the_state) result(the_result)
+    function parse_valid_identifier(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, sequence
 
         type(state_t), intent(in) :: the_state
@@ -210,9 +305,10 @@ contains
                 then_parse_valid_identifiers, &
                 the_state)
     contains
-        pure function then_parse_valid_identifiers(previous, state_) result(result_)
+        function then_parse_valid_identifiers(previous, state_) result(result_)
             use iso_varying_string, only: assignment(=), operator(//), var_str
             use parff, only: &
+                    message_t, &
                     parsed_character_t, &
                     parsed_items_t, &
                     parsed_string_t, &
@@ -220,8 +316,7 @@ contains
                     parser_output_t, &
                     state_t, &
                     consumed_ok, &
-                    many, &
-                    message
+                    many
 
             class(parsed_value_t), intent(in) :: previous
             type(state_t), intent(in) :: state_
@@ -232,37 +327,38 @@ contains
 
             select type (previous)
             type is (parsed_character_t)
-                parsed_identifier%value_ = previous%value_
+                parsed_identifier = parsed_string_t(previous%value_())
                 result_ = many(parse_valid_identifier_character, state_)
-                if (result_%empty) then
+                if (result_%empty()) then
                     result_ = consumed_ok( &
                             parsed_identifier, &
-                            state_%input, &
-                            state_%position, &
-                            message( &
-                                    state_%position, &
+                            state_%input(), &
+                            state_%position(), &
+                            message_t( &
+                                    state_%position(), &
                                     var_str(""), &
                                     [varying_string::]))
                 else
-                    select type (results => result_%parsed)
+                    select type (results => result_%parsed())
                     type is (parsed_items_t)
-                        do i = 1, size(results%items)
-                            select type (next_char => results%items(i)%item)
-                            type is (parsed_character_t)
-                                parsed_identifier%value_ = &
-                                        parsed_identifier%value_ &
-                                        // next_char%value_
-                            end select
-                        end do
+                        associate(items => results%items())
+                            do i = 1, size(items)
+                                select type (next_char => items(i)%item())
+                                type is (parsed_character_t)
+                                    parsed_identifier = parsed_string_t( &
+                                            parsed_identifier%value_() &
+                                            // next_char%value_())
+                                end select
+                            end do
+                        end associate
                     end select
-                    deallocate(result_%parsed)
-                    allocate(result_%parsed, source = parsed_identifier)
+                    result_ = result_%with_parsed_value(parsed_identifier)
                 end if
             end select
         end function
     end function
 
-    pure function parse_valid_first_character(the_state) result(the_result)
+    function parse_valid_first_character(the_state) result(the_result)
         use parff, only: parser_output_t, state_t
 
         type(state_t), intent(in) :: the_state
@@ -271,7 +367,7 @@ contains
         the_result = parse_alphabet(the_state)
     end function
 
-    pure function parse_valid_identifier_character(the_state) result(the_result)
+    function parse_valid_identifier_character(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, either
 
         type(state_t), intent(in) :: the_state
@@ -279,7 +375,7 @@ contains
 
         the_result = either(parse_alphabet, parse_non_letter, the_state)
     contains
-        pure function parse_non_letter(state_) result(result_)
+        function parse_non_letter(state_) result(result_)
             use parff, only: parser_output_t, state_t, parse_digit
 
             type(state_t), intent(in) :: state_
@@ -289,7 +385,7 @@ contains
         end function
     end function
 
-    pure function parse_alphabet(the_state) result(the_result)
+    function parse_alphabet(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, with_label
 
         type(state_t), intent(in) :: the_state
@@ -297,7 +393,7 @@ contains
 
         the_result = with_label("letter", the_parser, the_state)
     contains
-        pure function the_parser(state_) result(result_)
+        function the_parser(state_) result(result_)
             use parff, only: parser_output_t, state_t, satisfy
 
             type(state_t), intent(in) :: state_
@@ -318,7 +414,7 @@ contains
         end function
     end function
 
-    pure function parse_underscore(the_state) result(the_result)
+    function parse_underscore(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, parse_char
 
         type(state_t), intent(in) :: the_state
@@ -327,7 +423,7 @@ contains
         the_result = parse_char("_", the_state)
     end function
 
-    pure function parse_white_space(the_state) result(the_result)
+    function parse_white_space(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, with_label
 
         type(state_t), intent(in) :: the_state
@@ -335,7 +431,7 @@ contains
 
         the_result = with_label("whitespace", the_parser, the_state)
     contains
-        pure function the_parser(state_) result(result_)
+        function the_parser(state_) result(result_)
             use parff, only: parser_output_t, state_t, satisfy
 
             type(state_t), intent(in) :: state_
@@ -358,12 +454,13 @@ contains
         end function
     end function
 
-    pure function make_program(driver_name, test_infos) result(program_)
+    pure function make_program(driver_name, test_infos, command_line) result(program_)
         use iso_varying_string, only: varying_string, operator(//), var_str
         use strff, only: join, NEWLINE
 
         type(varying_string), intent(in) :: driver_name
         type(test_info_t), intent(in) :: test_infos(:)
+        type(command_line_t), intent(in) :: command_line
         type(varying_string) :: program_
 
         type(varying_string), allocatable :: test_array(:)
@@ -382,11 +479,27 @@ contains
                 var_str("    subroutine run()"), &
                 use_statements, &
                 var_str("        use vegetables, only: test_item_t, test_that, run_tests"), &
+                merge( &
+                        "        use " // command_line%setup_module // ", only: " // command_line%setup_procedure, &
+                        var_str(""), &
+                        command_line%has_setup_and_teardown), &
+                merge( &
+                        "        use " // command_line%teardown_module // ", only: " // command_line%teardown_procedure, &
+                        var_str(""), &
+                        command_line%has_setup_and_teardown), &
                 var_str(""), &
                 var_str("        type(test_item_t) :: tests"), &
                 test_array, &
                 var_str(""), &
+                merge( &
+                        "        call " // command_line%setup_procedure, &
+                        var_str(""), &
+                        command_line%has_setup_and_teardown), &
                 var_str("        call run_tests(tests)"), &
+                merge( &
+                        "        call " // command_line%teardown_procedure, &
+                        var_str(""), &
+                        command_line%has_setup_and_teardown), &
                 var_str("    end subroutine"), &
                 var_str("end program")], &
                 NEWLINE)
