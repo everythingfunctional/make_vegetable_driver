@@ -1,5 +1,6 @@
 module make_driver_m
     use iso_varying_string, only: varying_string, assignment(=)
+    use m_cli, only: commandline, check_commandline, files=>unnamed
 
     implicit none
     private
@@ -8,6 +9,11 @@ module make_driver_m
     type :: command_line_t
         type(varying_string) :: driver_file
         type(varying_string), allocatable :: test_files(:)
+        logical :: has_setup_and_teardown
+        type(varying_string) :: setup_module
+        type(varying_string) :: setup_procedure
+        type(varying_string) :: teardown_module
+        type(varying_string) :: teardown_procedure
     end type
 
     type :: test_info_t
@@ -18,24 +24,82 @@ contains
     function get_command_line() result(command_line)
         type(command_line_t) :: command_line
 
-        character(len=1000) :: argument
-        integer :: i
-        integer :: num_arguments
-        character(len=100) :: program_name
+        character(len=*), parameter :: EXAMPLE_COMMAND_LINE =  &
+                '--setup_module " " --setup_procedure " " --teardown_module " " --teardown_procedure " "'
+        character(len=:), allocatable :: help_text(:)
+        character(len=:), allocatable :: version_text(:)
+        integer :: i, ios
+        integer :: maxlen, leni
+        character(len=256) :: message
+        character(len=:), allocatable :: parsed_command_line
+        character(len=:), allocatable :: setup_module, setup_procedure, teardown_module, teardown_procedure
+        namelist /args/ setup_module, setup_procedure, teardown_module, teardown_procedure
 
-        num_arguments = command_argument_count()
-        if (num_arguments < 2) then
-            call get_command_argument(0, program_name)
-            print *, "Usage: " // trim(program_name) // " driver_name test_file [more [test [files [...]]]]"
+        help_text = [character(len=80) :: &
+                'NAME                                                    ', &
+                '   make_vegetable_driver                                ', &
+                'DESCRIPTION                                             ', &
+                '   Create the driver program for a vegetables test suite', &
+                'USAGE                                                   ', &
+                '   make_vegetable_driver \                              ', &
+                '       [--setup_module "" --setup_procedure "" \        ', &
+                '        --teardown_module "" --teardown_procedure ""] \ ', &
+                '       driver_name test_file [more [test [files [...]]]]', &
+                '' ]
+        version_text = [character(len=80) :: &
+                'PROGRAM:     make_vegetable_driver                                 >', &
+                'DESCRIPTION: Create the driver program for a vegetables test suite >', &
+                'VERSION:     1.1.0                                                 >', &
+                'AUTHOR:      Brad Richardson                                       >', &
+                'LICENSE:     MIT                                                   >', &
+                '' ]
+
+        ! find length of longest argument and allocate variables
+        ! to be big enough to hold that so it will not be truncated
+        maxlen=0
+        do i = 1, command_argument_count()
+            call get_command_argument(i,length=leni)
+            maxlen=max(maxlen,leni)
+        end do
+        allocate(character(len=maxlen) :: setup_module, setup_procedure, teardown_module, teardown_procedure)
+        parsed_command_line = commandline(EXAMPLE_COMMAND_LINE)
+        read(parsed_command_line, nml=args, iostat=ios, iomsg=message)
+        call check_commandline(ios, message, HELP_TEXT, VERSION_TEXT)
+        if (size(files) < 2) then
+            print *, "Not enough file names provided"
+            print *, ""
+            do i = 1, size(HELP_TEXT)
+                print *, HELP_TEXT(i)
+            end do
             error stop
         else
-            allocate(command_line%test_files(num_arguments - 1))
-            call get_command_argument(1, argument)
-            command_line%driver_file = trim(argument)
-            do i = 1, num_arguments - 1
-                call get_command_argument(i+1, argument)
-                command_line%test_files(i) = trim(argument)
+            allocate(command_line%test_files(size(files) - 1))
+            command_line%driver_file = trim(files(1))
+            do i = 1, size(files) - 1
+                command_line%test_files(i) = trim(files(i+1))
             end do
+        end if
+        if (any([setup_module, setup_procedure, teardown_module, teardown_procedure] /= "")) then
+            if (any([setup_module, setup_procedure, teardown_module, teardown_procedure] == "")) then
+                print *, "Must provide all of setup/teardown arguments or none"
+                print *, ""
+                do i = 1, size(HELP_TEXT)
+                    print *, HELP_TEXT(i)
+                end do
+                error stop
+            else
+                command_line%has_setup_and_teardown = .true.
+                command_line%setup_module = trim(setup_module)
+                command_line%setup_procedure = trim(setup_procedure)
+                command_line%teardown_module = trim(teardown_module)
+                command_line%teardown_procedure = trim(teardown_procedure)
+            end if
+        else
+            command_line%has_setup_and_teardown = .false.
+            command_line%setup_module = ""
+            command_line%setup_procedure = ""
+            command_line%teardown_module = ""
+            command_line%teardown_procedure = ""
         end if
     end function
 
@@ -49,7 +113,10 @@ contains
         type(test_info_t) :: test_infos(size(command_line%test_files))
 
         call get_test_info(command_line%test_files, test_infos)
-        program_ = make_program(take_file_name(drop_extension(command_line%driver_file)), test_infos)
+        program_ = make_program( &
+                take_file_name(drop_extension(command_line%driver_file)), &
+                test_infos, &
+                command_line)
         open(newunit = file_unit, file = char(command_line%driver_file), action = "WRITE", status = "REPLACE")
         call put(file_unit, program_)
         close(file_unit)
@@ -387,12 +454,13 @@ contains
         end function
     end function
 
-    pure function make_program(driver_name, test_infos) result(program_)
+    pure function make_program(driver_name, test_infos, command_line) result(program_)
         use iso_varying_string, only: varying_string, operator(//), var_str
         use strff, only: join, NEWLINE
 
         type(varying_string), intent(in) :: driver_name
         type(test_info_t), intent(in) :: test_infos(:)
+        type(command_line_t), intent(in) :: command_line
         type(varying_string) :: program_
 
         type(varying_string), allocatable :: test_array(:)
@@ -411,11 +479,27 @@ contains
                 var_str("    subroutine run()"), &
                 use_statements, &
                 var_str("        use vegetables, only: test_item_t, test_that, run_tests"), &
+                merge( &
+                        "        use " // command_line%setup_module // ", only: " // command_line%setup_procedure, &
+                        var_str(""), &
+                        command_line%has_setup_and_teardown), &
+                merge( &
+                        "        use " // command_line%teardown_module // ", only: " // command_line%teardown_procedure, &
+                        var_str(""), &
+                        command_line%has_setup_and_teardown), &
                 var_str(""), &
                 var_str("        type(test_item_t) :: tests"), &
                 test_array, &
                 var_str(""), &
+                merge( &
+                        "        call " // command_line%setup_procedure, &
+                        var_str(""), &
+                        command_line%has_setup_and_teardown), &
                 var_str("        call run_tests(tests)"), &
+                merge( &
+                        "        call " // command_line%teardown_procedure, &
+                        var_str(""), &
+                        command_line%has_setup_and_teardown), &
                 var_str("    end subroutine"), &
                 var_str("end program")], &
                 NEWLINE)
