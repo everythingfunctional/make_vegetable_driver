@@ -1,28 +1,56 @@
 module make_driver_m
-    use iso_varying_string, only: varying_string
+    use iso_varying_string, only: varying_string, assignment(=)
 
     implicit none
     private
-    public :: make_driver
+    public :: get_command_line, make_driver
+
+    type :: command_line_t
+        type(varying_string) :: driver_file
+        type(varying_string), allocatable :: test_files(:)
+    end type
 
     type :: test_info_t
         type(varying_string) :: module_name
         type(varying_string), allocatable :: function_names(:)
     end type
 contains
-    subroutine make_driver(driver_file, test_files)
+    function get_command_line() result(command_line)
+        type(command_line_t) :: command_line
+
+        character(len=1000) :: argument
+        integer :: i
+        integer :: num_arguments
+        character(len=100) :: program_name
+
+        num_arguments = command_argument_count()
+        if (num_arguments < 2) then
+            call get_command_argument(0, program_name)
+            print *, "Usage: " // trim(program_name) // " driver_name test_file [more [test [files [...]]]]"
+            error stop
+        else
+            allocate(command_line%test_files(num_arguments - 1))
+            call get_command_argument(1, argument)
+            command_line%driver_file = trim(argument)
+            do i = 1, num_arguments - 1
+                call get_command_argument(i+1, argument)
+                command_line%test_files(i) = trim(argument)
+            end do
+        end if
+    end function
+
+    subroutine make_driver(command_line)
         use iso_varying_string, only: varying_string, char, put
 
-        type(varying_string), intent(in) :: driver_file
-        type(varying_string), intent(in) :: test_files(:)
+        type(command_line_t), intent(in) :: command_line
 
         integer :: file_unit
         type(varying_string) :: program_
-        type(test_info_t) :: test_infos(size(test_files))
+        type(test_info_t) :: test_infos(size(command_line%test_files))
 
-        call get_test_info(test_files, test_infos)
-        program_ = make_program(take_file_name(drop_extension(driver_file)), test_infos)
-        open(newunit = file_unit, file = char(driver_file), action = "WRITE", status = "REPLACE")
+        call get_test_info(command_line%test_files, test_infos)
+        program_ = make_program(take_file_name(drop_extension(command_line%driver_file)), test_infos)
+        open(newunit = file_unit, file = char(command_line%driver_file), action = "WRITE", status = "REPLACE")
         call put(file_unit, program_)
         close(file_unit)
     end subroutine
