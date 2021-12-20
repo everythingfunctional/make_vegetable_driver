@@ -97,21 +97,21 @@ contains
         lines = read_file_lines(filename)
         allocate(maybe_function_names(size(lines)))
         maybe_function_names = parse_line(lines)
-        num_function_names = count(maybe_function_names%ok)
-        allocate(function_name_results(num_function_names))
         allocate(function_mask(size(lines)))
-        function_mask = maybe_function_names%ok
+        function_mask = [(maybe_function_names(i)%ok(), i = 1, size(maybe_function_names))]
+        num_function_names = count(function_mask)
+        allocate(function_name_results(num_function_names))
         function_name_results = pack(maybe_function_names, function_mask)
         allocate(function_names(num_function_names))
         do i = 1, num_function_names
-            select type (name => function_name_results(i)%parsed)
+            select type (name => function_name_results(i)%parsed())
             type is (parsed_string_t)
-                function_names(i) = name%value_
+                function_names(i) = name%value_()
             end select
         end do
     end subroutine
 
-    elemental function parse_line(line) result(maybe_name)
+    impure elemental function parse_line(line) result(maybe_name)
         use iso_varying_string, only: varying_string
         use parff, only: parse_result_t, parse_with
 
@@ -121,15 +121,15 @@ contains
         maybe_name = parse_with(parse_test_function_name, line)
     end function
 
-    pure function parse_test_function_name(the_state) result(the_result)
+    function parse_test_function_name(the_state) result(the_result)
         use iso_varying_string, only: var_str
         use parff, only: &
+                message_t, &
                 parsed_string_t, &
                 parser_output_t, &
                 state_t, &
                 drop_then, &
                 empty_error, &
-                message, &
                 then_drop
         use strff, only: operator(.startswith.)
 
@@ -143,18 +143,18 @@ contains
                                 parse_at_least_one_white_space), &
                         parse_valid_identifier), &
                 parse_space_or_open_paren)
-        if (the_result%ok) then
-            select type (the_name => the_result%parsed)
+        if (the_result%ok()) then
+            select type (the_name => the_result%parsed())
             type is (parsed_string_t)
-                if (.not. (the_name%value_.startswith."test_")) then
-                    the_result = empty_error(message( &
-                            the_state%position, the_name%value_, [var_str("test_*")]))
+                if (.not. (the_name%value_().startswith."test_")) then
+                    the_result = empty_error(message_t( &
+                            the_state%position(), the_name%value_(), [var_str("test_*")]))
                 end if
             end select
         end if
     end function
 
-    pure function parse_function(the_state) result(the_result)
+    function parse_function(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, parse_string
 
         type(state_t), intent(in) :: the_state
@@ -163,7 +163,7 @@ contains
         the_result = parse_string("function", the_state)
     end function
 
-    pure function parse_space_or_open_paren(the_state) result(the_result)
+    function parse_space_or_open_paren(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, either
 
         type(state_t), intent(in) :: the_state
@@ -172,7 +172,7 @@ contains
         the_result = either(parse_at_least_one_white_space, parse_open_paren, the_state)
     end function
 
-    pure function parse_open_paren(the_state) result(the_result)
+    function parse_open_paren(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, parse_char
 
         type(state_t), intent(in) :: the_state
@@ -181,7 +181,7 @@ contains
         the_result = parse_char("(", the_state)
     end function
 
-    pure function parse_any_white_spaces(the_state) result(the_result)
+    function parse_any_white_spaces(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, many
 
         type(state_t), intent(in) :: the_state
@@ -190,7 +190,7 @@ contains
         the_result = many(parse_white_space, the_state)
     end function
 
-    pure function parse_at_least_one_white_space(the_state) result(the_result)
+    function parse_at_least_one_white_space(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, many1
 
         type(state_t), intent(in) :: the_state
@@ -199,7 +199,7 @@ contains
         the_result = many1(parse_white_space, the_state)
     end function
 
-    pure function parse_valid_identifier(the_state) result(the_result)
+    function parse_valid_identifier(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, sequence
 
         type(state_t), intent(in) :: the_state
@@ -210,9 +210,10 @@ contains
                 then_parse_valid_identifiers, &
                 the_state)
     contains
-        pure function then_parse_valid_identifiers(previous, state_) result(result_)
+        function then_parse_valid_identifiers(previous, state_) result(result_)
             use iso_varying_string, only: assignment(=), operator(//), var_str
             use parff, only: &
+                    message_t, &
                     parsed_character_t, &
                     parsed_items_t, &
                     parsed_string_t, &
@@ -220,8 +221,7 @@ contains
                     parser_output_t, &
                     state_t, &
                     consumed_ok, &
-                    many, &
-                    message
+                    many
 
             class(parsed_value_t), intent(in) :: previous
             type(state_t), intent(in) :: state_
@@ -232,37 +232,38 @@ contains
 
             select type (previous)
             type is (parsed_character_t)
-                parsed_identifier%value_ = previous%value_
+                parsed_identifier = parsed_string_t(previous%value_())
                 result_ = many(parse_valid_identifier_character, state_)
-                if (result_%empty) then
+                if (result_%empty()) then
                     result_ = consumed_ok( &
                             parsed_identifier, &
-                            state_%input, &
-                            state_%position, &
-                            message( &
-                                    state_%position, &
+                            state_%input(), &
+                            state_%position(), &
+                            message_t( &
+                                    state_%position(), &
                                     var_str(""), &
                                     [varying_string::]))
                 else
-                    select type (results => result_%parsed)
+                    select type (results => result_%parsed())
                     type is (parsed_items_t)
-                        do i = 1, size(results%items)
-                            select type (next_char => results%items(i)%item)
-                            type is (parsed_character_t)
-                                parsed_identifier%value_ = &
-                                        parsed_identifier%value_ &
-                                        // next_char%value_
-                            end select
-                        end do
+                        associate(items => results%items())
+                            do i = 1, size(items)
+                                select type (next_char => items(i)%item())
+                                type is (parsed_character_t)
+                                    parsed_identifier = parsed_string_t( &
+                                            parsed_identifier%value_() &
+                                            // next_char%value_())
+                                end select
+                            end do
+                        end associate
                     end select
-                    deallocate(result_%parsed)
-                    allocate(result_%parsed, source = parsed_identifier)
+                    result_ = result_%with_parsed_value(parsed_identifier)
                 end if
             end select
         end function
     end function
 
-    pure function parse_valid_first_character(the_state) result(the_result)
+    function parse_valid_first_character(the_state) result(the_result)
         use parff, only: parser_output_t, state_t
 
         type(state_t), intent(in) :: the_state
@@ -271,7 +272,7 @@ contains
         the_result = parse_alphabet(the_state)
     end function
 
-    pure function parse_valid_identifier_character(the_state) result(the_result)
+    function parse_valid_identifier_character(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, either
 
         type(state_t), intent(in) :: the_state
@@ -279,7 +280,7 @@ contains
 
         the_result = either(parse_alphabet, parse_non_letter, the_state)
     contains
-        pure function parse_non_letter(state_) result(result_)
+        function parse_non_letter(state_) result(result_)
             use parff, only: parser_output_t, state_t, parse_digit
 
             type(state_t), intent(in) :: state_
@@ -289,7 +290,7 @@ contains
         end function
     end function
 
-    pure function parse_alphabet(the_state) result(the_result)
+    function parse_alphabet(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, with_label
 
         type(state_t), intent(in) :: the_state
@@ -297,7 +298,7 @@ contains
 
         the_result = with_label("letter", the_parser, the_state)
     contains
-        pure function the_parser(state_) result(result_)
+        function the_parser(state_) result(result_)
             use parff, only: parser_output_t, state_t, satisfy
 
             type(state_t), intent(in) :: state_
@@ -318,7 +319,7 @@ contains
         end function
     end function
 
-    pure function parse_underscore(the_state) result(the_result)
+    function parse_underscore(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, parse_char
 
         type(state_t), intent(in) :: the_state
@@ -327,7 +328,7 @@ contains
         the_result = parse_char("_", the_state)
     end function
 
-    pure function parse_white_space(the_state) result(the_result)
+    function parse_white_space(the_state) result(the_result)
         use parff, only: parser_output_t, state_t, with_label
 
         type(state_t), intent(in) :: the_state
@@ -335,7 +336,7 @@ contains
 
         the_result = with_label("whitespace", the_parser, the_state)
     contains
-        pure function the_parser(state_) result(result_)
+        function the_parser(state_) result(result_)
             use parff, only: parser_output_t, state_t, satisfy
 
             type(state_t), intent(in) :: state_
