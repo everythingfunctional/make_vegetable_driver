@@ -49,7 +49,7 @@ contains
         version_text = [character(len=80) :: &
                 'PROGRAM:     make_vegetable_driver                                 >', &
                 'DESCRIPTION: Create the driver program for a vegetables test suite >', &
-                'VERSION:     1.1.0                                                 >', &
+                'VERSION:     1.2.0                                                 >', &
                 'AUTHOR:      Brad Richardson                                       >', &
                 'LICENSE:     MIT                                                   >', &
                 '' ]
