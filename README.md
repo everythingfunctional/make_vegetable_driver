@@ -1,5 +1,9 @@
 # make_vegetable_driver
 
+## This Project is Now Dormant!
+
+It has been superseded by the new project [cart](https://gitlab.com/everythingfunctional/cart).
+
 Tool for creating the driver program for a [vegetables] test suite.
 
 ## Downloading and installing
